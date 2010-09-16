@@ -84,14 +84,18 @@ int main(int argc, char** argv)
 	
 	double dpi = 6.2831852;
 	
+	// Sound output through libao
+	
 	ao_device *device;
 	ao_sample_format format;
 	int default_driver;
 	
-    fftw_complex *in, *out;
-    fftw_plan p;	
+	// Structures for FFT
 	
-
+	fftw_complex *in, *out;
+	fftw_plan p;	
+	
+	// Initialiazing audio output
 	
 	ao_initialize();
 	default_driver = ao_default_driver_id();
@@ -103,30 +107,39 @@ int main(int argc, char** argv)
 	device = ao_open_live(default_driver, &format, NULL);	
 	
 
-    fd = fopen("test.wav", "rb");
+	// Opening sound file for reading source data
+
+	fd = fopen("test.wav", "rb");
 	fseek(fd, 40, SEEK_SET);
 	fread(&frames, sizeof(int), 1, fd);
 	printf("%d", frames);
 	
+	// Hardcoded parameters for DSP
 
-	sample_rate = 44100; // Hz
-	sample_bits = 16;
-	sample_channels = 2;
-	sample_msec = 100; // For 10 Hz
+	sample_rate = 44100; // Desc. frequency, Hz
+	sample_bits = 16; // Bits per sample
+	sample_channels = 2; // Stereo
+	sample_msec = 100; // Size of sample, 100 ms for 10 Hz FFT freq. resolution
+	
 	sample_size = (int)(sample_rate * (sample_msec / 1000.0F));
 	sample_buffer_size =  sample_size * sample_bits/8 * sample_channels;
 	sample_buffer = (char *) calloc(sample_buffer_size, sizeof(char));
 	
+	// Structures for stroing harmonics of input signal
+	
 	harmonics = (struct Harmonic *) malloc(sample_size * sizeof(struct Harmonic) / 2);
 	phases = (double *) malloc(5 * pos * sizeof(double));
 	
-    in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * sample_size);
-    out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * sample_size);
-    p = fftw_plan_dft_1d(sample_size, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+	in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * sample_size);
+	out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * sample_size);
+	p = fftw_plan_dft_1d(sample_size, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
 	
+	
+	// Reading util end of file (frames - number of frames in WAV)
 	
 	for (i = 0; i < (sample_rate / sample_size) * (frames / (sample_rate * sample_channels * (sample_bits / 8))) ; ++i) {
 		
+		// Reading sample from file and copying to in[][] for FFT
 		for (j = 0; j < sample_size; ++j) {
 			fread(&tmp_buf, sizeof(char), 2, fd);
 			fread(&tmp_buf, sizeof(char), 2, fd);
@@ -134,13 +147,18 @@ int main(int argc, char** argv)
 			in[j][1] = 0;	
 		}
 		
+		// FFT 
 		fftw_execute(p);
+		
+		// Transform FFT's out[][] into array of harmonics
 		
 		for (j = 0; j < sample_size / 2; ++j) {
 			harmonics[j].ampl = sqrt(out[j][0] * out[j][0] + out[j][1] * out[j][1]) / sample_size;
 			harmonics[j].phase = atan2(out[j][1], out[j][0]);
 			harmonics[j].freq = j / ((double)sample_msec / 1000);
 		}
+		
+		// Searching main harmonic
 		
 		spectre[0].ampl = harmonics[0].ampl;
 		for (j = 1; j < sample_size / 2; ++j) {
@@ -152,6 +170,8 @@ int main(int argc, char** argv)
 			}
 		}
 		
+		// Searching other harmonics as multiplies of main harmonic (2f, 3f, 4f, ...)
+		
 		current *= 2;
 		pos = 1;
 		while (pos < 10) {
@@ -160,6 +180,8 @@ int main(int argc, char** argv)
 			spectre[pos].phase = harmonics[current - 10].phase;
 			spectre[pos].freq = harmonics[current - 10].freq;
 			ch = current - 10;
+			
+			// Looking window contains 20 frequencies around n * f (needed for accurate syntheses)
 			
 			for (j = current - 9; j < current + 10; ++j) {
 				if (harmonics[j].ampl > spectre[pos].ampl) {
@@ -171,11 +193,15 @@ int main(int argc, char** argv)
 			}
 			current = ch * 2;
 			
+			// Skip harmonics beyond FFT's resolution
+			
 			if (current + 10 > sample_size / 2)
 				break;
 			
 			++pos;
 		}
+		
+		// Debug output
 		
 		ampl = 0;
 		for (j = 0; j < pos; ++j)
@@ -185,13 +211,15 @@ int main(int argc, char** argv)
 		for (j = 0; j < pos; ++j)
 			printf("\t%d harmonic: f = %.4lf Hz, a = %.4lf \%\n", j, spectre[j].freq, spectre[j].ampl * 100 / ampl);
 		
+		// Computing phase multipliers for our chord (0,3; 4,3; 7,3 is the C major (C, E, G), see declaration of compute_freq())
+		
 		for (j = 0; j < pos; ++j) {
 			phases[j * 3] = dpi / (float)sample_rate * compute_freq(0, 3) * (j + 1);
 			phases[j * 3 + 1] = dpi / (float)sample_rate * compute_freq(4, 3) * (j + 1);
 			phases[j * 3 + 2] = dpi / (float)sample_rate * compute_freq(7, 3) * (j + 1);
 		}
 		
-		// Generate and upmix chord (C major)
+		// Generate and upmix chord directly into out buffer
 		
 		for (j = 0; j < sample_size; ++j) {
 			samples[0] = samples[1] = samples[2] = 0;
@@ -206,12 +234,14 @@ int main(int argc, char** argv)
 			sample_buffer[4 * j + 1] = sample_buffer[4 * j + 3] = (sample >> 8) & 0xff;				
 		}
 		
+		// Playing synthesized data
+		
 		ao_play(device, sample_buffer, sample_buffer_size);
 	}
 	
 	
-    fftw_destroy_plan(p);
-    fftw_free(in); fftw_free(out);
+	fftw_destroy_plan(p);
+	fftw_free(in); fftw_free(out);
 	
 	ao_close(device);
 	ao_shutdown();
