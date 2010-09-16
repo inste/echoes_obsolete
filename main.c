@@ -108,8 +108,7 @@ int main(int argc, char** argv)
 	fread(&frames, sizeof(int), 1, fd);
 	printf("%d", frames);
 	
-	freq = 224.0; // Hz
-	//freq2 = 660.0;
+
 	sample_rate = 44100; // Hz
 	sample_bits = 16;
 	sample_channels = 2;
@@ -119,7 +118,7 @@ int main(int argc, char** argv)
 	sample_buffer = (char *) calloc(sample_buffer_size, sizeof(char));
 	
 	harmonics = (struct Harmonic *) malloc(sample_size * sizeof(struct Harmonic) / 2);
-	phases = (double *) malloc(pos * sizeof(double));
+	phases = (double *) malloc(5 * pos * sizeof(double));
 	
     in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * sample_size);
     out = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * sample_size);
@@ -131,34 +130,16 @@ int main(int argc, char** argv)
 		for (j = 0; j < sample_size; ++j) {
 			fread(&tmp_buf, sizeof(char), 2, fd);
 			fread(&tmp_buf, sizeof(char), 2, fd);
-			in[j][0] = 0xff * tmp_buf[1] + tmp_buf[0] * ((tmp_buf[1] < 0) ? -1 : 1);
-		//	printf("A = %.4lf\n", in[j][0]);
+			in[j][0] = 0xff * tmp_buf[1] + tmp_buf[0] * ((tmp_buf[1] < 0) ? -1 : 1); // Little endian :)
 			in[j][1] = 0;	
 		}
 		
-		/*
-		for (j = 0; j < sample_size; ++j) {
-			sample = (int)(
-				0.90 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq)
-			+	0.20 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 2)
-			+	0.06 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 3)
-			+   0.09 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 4)
-			+   0.20 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 5)
-			+   0.01 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 6)	
-			+   0.008 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 7)
-			+   0.01 * 32768.0 * sin(dpi * (i * sample_size + j) / (float)sample_rate * freq * 8));
-			in[j][0] = sample;
-			in[j][1] = 0;
-		}
-		
-		*/
-		
 		fftw_execute(p);
+		
 		for (j = 0; j < sample_size / 2; ++j) {
 			harmonics[j].ampl = sqrt(out[j][0] * out[j][0] + out[j][1] * out[j][1]) / sample_size;
 			harmonics[j].phase = atan2(out[j][1], out[j][0]);
 			harmonics[j].freq = j / ((double)sample_msec / 1000);
-	//		printf("# %d: freq = %.4lf Hz, A = %.4lf, phase =  : %.4lf\n", j, harmonics[j].freq, harmonics[j].ampl, harmonics[j].phase);
 		}
 		
 		spectre[0].ampl = harmonics[0].ampl;
@@ -170,9 +151,6 @@ int main(int argc, char** argv)
 				spectre[0].freq = harmonics[j].freq;
 			}
 		}
-		
-		printf("Sample # %d:\n", i);
-		printf("\tFirst harmonic: f = %.4lf, a = %.4lf, phase = %.4lf\n", spectre[0].freq, spectre[0].ampl, spectre[0].phase);		
 		
 		current *= 2;
 		pos = 1;
@@ -191,7 +169,6 @@ int main(int argc, char** argv)
 					spectre[pos].freq = harmonics[j].freq;
 				}
 			}
-			printf("\t%d harmonic: f = %.4lf, a = %.4lf, phase = %.4lf\n", pos, spectre[pos].freq, spectre[pos].ampl, spectre[pos].phase);
 			current = ch * 2;
 			
 			if (current + 10 > sample_size / 2)
@@ -200,22 +177,34 @@ int main(int argc, char** argv)
 			++pos;
 		}
 		
+		ampl = 0;
+		for (j = 0; j < pos; ++j)
+			ampl += spectre[j].ampl;
+			
+		printf("Sample # %d:\n", i);
+		for (j = 0; j < pos; ++j)
+			printf("\t%d harmonic: f = %.4lf Hz, a = %.4lf \%\n", j, spectre[j].freq, spectre[j].ampl * 100 / ampl);
+		
+		for (j = 0; j < pos; ++j) {
+			phases[j * 3] = dpi / (float)sample_rate * compute_freq(0, 3) * (j + 1);
+			phases[j * 3 + 1] = dpi / (float)sample_rate * compute_freq(4, 3) * (j + 1);
+			phases[j * 3 + 2] = dpi / (float)sample_rate * compute_freq(7, 3) * (j + 1);
+		}
 		
 		// Generate and upmix chord (C major)
 		
 		for (j = 0; j < sample_size; ++j) {
 			samples[0] = samples[1] = samples[2] = 0;
 			for (k = 0; k < pos; ++k) {
-				samples[0] += (int)(spectre[k].ampl * sin((i * sample_size + j) * dpi / (float)sample_rate * compute_freq(6, 3) * (k + 1)) / 3);
-				samples[1] += (int)(spectre[k].ampl * sin((i * sample_size + j) * dpi / (float)sample_rate * compute_freq(9, 3) * (k + 1)) / 3);
-				samples[2] += (int)(spectre[k].ampl * sin((i * sample_size + j) * dpi / (float)sample_rate * compute_freq(11, 3) * (k + 1)) / 3);
+				samples[0] += (int)(spectre[k].ampl * sin((i * sample_size + j) * phases[k * 3]) / 3);
+				samples[1] += (int)(spectre[k].ampl * sin((i * sample_size + j) * phases[k * 3 + 1]) / 3);
+				samples[2] += (int)(spectre[k].ampl * sin((i * sample_size + j) * phases[k * 3 + 2]) / 3);
 			}
 			sample = samples[0] + samples[1] + samples[2];	
 			
 			sample_buffer[4 * j] = sample_buffer[4 * j + 2] = sample & 0xff;
 			sample_buffer[4 * j + 1] = sample_buffer[4 * j + 3] = (sample >> 8) & 0xff;				
 		}
-		
 		
 		ao_play(device, sample_buffer, sample_buffer_size);
 	}
